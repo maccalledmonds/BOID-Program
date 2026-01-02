@@ -1,143 +1,327 @@
+"""Boids / Flocking simulation (Pygame)
+
+Controls:
+ - P : Toggle pixel-based separation (slower)
+ - SPACE : add 10 more boids
+ - T : toggle trails (don't clear background)
+ - +/- : change separation weight
+ - ESC or close window : quit
+
+Drop this file in the project and run: python flight_model.py
+"""
+
 import pygame
+import random
+import colorsys
 from pygame.math import Vector2
-import numpy as np
 
-pygame.init()
-screen = pygame.display.set_mode((720, 720))
-clock = pygame.time.Clock()
-running = True
 
-class Bird(pygame.sprite.Sprite):
-    def __init__(self, x, y, size_factor):
-        pos = (x, y)
-        base_shape = [(1, 1), (1, 16), (21, 8)]
-        new_shape = [(int(tup[0] * size_factor), int(tup[1] * size_factor)) for tup in base_shape]
+WIDTH, HEIGHT = 900, 700
+NUM_BOIDS = 80
+MAX_SPEED = 6
+MAX_FORCE = 0.07
 
-        super().__init__()
+SEPARATION_RADIUS = 25
+ALIGNMENT_RADIUS = 45
+COHESION_RADIUS = 50
 
-        # Load sprite image
-        surface_width = int(40 * size_factor)
-        surface_height = int(30 * size_factor)
-        self.original_image = pygame.Surface((surface_width, surface_height), pygame.SRCALPHA)
-        pygame.draw.polygon(self.original_image, (0,0,0), new_shape)
+SEPARATION_WEIGHT = 1.8
+ALIGNMENT_WEIGHT = 1.0
+COHESION_WEIGHT = 1.5
 
-        self.image = self.original_image
-        self.rect = self.image.get_rect(center=pos)
+PIXEL_SEP_RADIUS = 26
+PIXEL_SAMPLE_STEP = 6
 
-        # Vector position and movement
-        self.pos = pygame.math.Vector2(pos)
-        self.vel = pygame.math.Vector2(0, 0)
-        self.acceleration = 0.3
-        self.friction = 0.05
+BACKGROUND_COLOR = (255, 255, 255)
 
-        # Rotation
-        self.angle = 0
-        self.rotation_speed = 5  # degrees per frame
+# Boundary mode: 'wrap' (toroidal) or 'avoid' (rotate away from edges)
+BOUNDARY_MODE = 'wrap'
+
+
+def hsv_to_rgb_int(h, s, v):
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+class Boid:
+    def __init__(self, x, y, color):
+        self.pos = Vector2(x, y)
+        angle = random.random() * 360
+        self.vel = Vector2(1, 0).rotate(angle) * random.uniform(1.0, MAX_SPEED)
+        self.acc = Vector2(0, 0)
+        self.color = color
+        self.size = 6
+        # Current visible angle (degrees). Used when avoiding boundaries.
+        self.angle = self.vel.angle_to(Vector2(1, 0))
+        self.rotation_speed = 4
+
+    def edges(self):
+        global BOUNDARY_MODE
+        if BOUNDARY_MODE == 'wrap':
+            # wrap-around for infinite-like space
+            if self.pos.x < 0:
+                self.pos.x += WIDTH
+            elif self.pos.x >= WIDTH:
+                self.pos.x -= WIDTH
+            if self.pos.y < 0:
+                self.pos.y += HEIGHT
+            elif self.pos.y >= HEIGHT:
+                self.pos.y -= HEIGHT
+        else:
+            # clamp position so boids don't escape window when using avoidance
+            self.pos.x = max(0, min(self.pos.x, WIDTH - 1))
+            self.pos.y = max(0, min(self.pos.y, HEIGHT - 1))
+
+    def apply_force(self, force: Vector2):
+        self.acc += force
 
     def update(self):
-        keys = pygame.key.get_pressed()
-
-        # ROTATION
-        if keys[pygame.K_LEFT]:
-            self.angle += self.rotation_speed
-        if keys[pygame.K_RIGHT]:
-            self.angle -= self.rotation_speed
-
-        # MOVEMENT IN DIRECTION OF ROTATION
-        if keys[pygame.K_UP]:
-            # direction the sprite is facing
-            direction = pygame.math.Vector2(1, 0).rotate(-self.angle)
-            self.vel += direction * self.acceleration
-
-        # Apply friction
-        self.vel *= (1 - self.friction)
-
-        # Update position
+        self.vel += self.acc
+        if self.vel.length() > MAX_SPEED:
+            self.vel.scale_to_length(MAX_SPEED)
         self.pos += self.vel
-        self.rect.center = self.pos
-        
-        # Set boundary
-        screen = pygame.display.get_surface()
-        self.width, self.height = screen.get_size()
-        x_pos, y_pos = self.pos
-        # if x_pos > self.width:
-        #     self.pos.x = 0
-        # elif x_pos < 0:
-        #     self.pos.x = self.width
-        # if y_pos > self.height:
-        #     self.pos.y = 0
-        # elif y_pos < 0:
-        #     self.pos.y = self.height
-
-        # Rotate bird away from boundary and corners (optimized for minimal rotation)
-        def angle_diff(a, b):
-            d = (a - b + 180) % 360 - 180
-            return d
-
-        near_left = x_pos < self.width * 0.1
-        near_right = x_pos > self.width * 0.9
-        near_top = y_pos < self.height * 0.1
-        near_bottom = y_pos > self.height * 0.9
-
-        # Helper function to rotate toward target with minimal rotation
-        def rotate_to_target(current_angle, target_angle, threshold=15, rotation_speed=10):
-            diff = angle_diff(current_angle, target_angle)
-            if abs(diff) > threshold:
-                # Rotate in the direction that requires less rotation
-                return current_angle + (rotation_speed if diff < 0 else -rotation_speed)
-            return current_angle
-
-        # Handle corners first
-        if near_left and near_top:
-            # Top-left corner: face down-right (angle 315)
-            self.angle = rotate_to_target(self.angle, 315)
-        elif near_right and near_top:
-            # Top-right corner: face down-left (angle 225)
-            self.angle = rotate_to_target(self.angle, 225)
-        elif near_left and near_bottom:
-            # Bottom-left corner: face up-right (angle 45)
-            self.angle = rotate_to_target(self.angle, 45)
-        elif near_right and near_bottom:
-            # Bottom-right corner: face up-left (angle 135)
-            self.angle = rotate_to_target(self.angle, 135)
+        self.acc *= 0
+        # Update angle and apply edge behavior
+        global BOUNDARY_MODE
+        if BOUNDARY_MODE == 'wrap':
+            # align visible heading to velocity
+            if self.vel.length() > 0:
+                self.angle = self.vel.angle_to(Vector2(1, 0))
         else:
-            # Handle edges (not corners)
-            if near_right:
-                self.angle = rotate_to_target(self.angle, 180)
-            elif near_left:
-                self.angle = rotate_to_target(self.angle, 0)
-            if near_bottom:
-                self.angle = rotate_to_target(self.angle, 90)
-            elif near_top:
-                self.angle = rotate_to_target(self.angle, 270)
+            # detect being near edges and gently rotate away
+            x_pos, y_pos = self.pos.x, self.pos.y
+            near_left = x_pos < WIDTH * 0.1
+            near_right = x_pos > WIDTH * 0.9
+            near_top = y_pos < HEIGHT * 0.1
+            near_bottom = y_pos > HEIGHT * 0.9
 
-        # ROTATE IMAGE
-        self.image = pygame.transform.rotate(self.original_image, self.angle)
-        self.rect = self.image.get_rect(center=self.rect.center)
+            # choose a target angle depending on corner/edge
+            target = None
+            if near_left and near_top:
+                target = 315
+            elif near_right and near_top:
+                target = 225
+            elif near_left and near_bottom:
+                target = 45
+            elif near_right and near_bottom:
+                target = 135
+            else:
+                if near_right:
+                    target = 180
+                elif near_left:
+                    target = 0
+                if near_bottom:
+                    if target is None:
+                        target = 90
+                elif near_top:
+                    if target is None:
+                        target = 270
 
-        # self.rect.clamp_ip(pygame.display.get_surface().get_rect())
+            if target is not None:
+                self.angle = self._rotate_to_target(self.angle, target, rotation_speed=self.rotation_speed)
+                # push a small force toward the new heading so the boid moves away
+                direction = Vector2(1, 0).rotate(-self.angle)
+                self.apply_force(direction * 0.08)
 
-x, y = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2) #Player_pos set in the middle
-bird = Bird(x, y, 1)
-bird_sprites_group = pygame.sprite.Group(bird)
-screen = pygame.display.get_surface()
-width, height = screen.get_size()
-print(f"surface size is: {width}, {height}")
+        self.edges()
 
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-    # fill the screen with a color to wipe away anything from last frame
-    screen.fill("white") #disable this later on and create a method to trace the bird path
+    def draw(self, surf):
+        # draw as rotated triangle pointing in velocity direction
+        global BOUNDARY_MODE
+        if BOUNDARY_MODE == 'avoid':
+            heading = self.angle
+        else:
+            heading = self.vel.angle_to(Vector2(1, 0))
+        p1 = Vector2(self.size * 2, 0).rotate(-heading) + self.pos
+        p2 = Vector2(-self.size, self.size).rotate(-heading) + self.pos
+        p3 = Vector2(-self.size, -self.size).rotate(-heading) + self.pos
+        pygame.draw.polygon(surf, self.color, [p1, p2, p3])
 
-    bird_sprites_group.update()
-    bird_sprites_group.draw(screen)
+    # Steering behaviors using neighbors list (vector-based)
+    def separation(self, boids):
+        steer = Vector2(0, 0)
+        total = 0
+        for other in boids:
+            if other is self:
+                continue
+            d = self.pos.distance_to(other.pos)
+            if d < SEPARATION_RADIUS and d > 0:
+                diff = (self.pos - other.pos).normalize() / d
+                steer += diff
+                total += 1
+        if total > 0:
+            steer /= total
+            if steer.length() > 0:
+                steer.scale_to_length(MAX_SPEED)
+                steer -= self.vel
+                if steer.length() > MAX_FORCE:
+                    steer.scale_to_length(MAX_FORCE)
+        return steer
+
+    def alignment(self, boids):
+        avg = Vector2(0, 0)
+        total = 0
+        for other in boids:
+            if other is self:
+                continue
+            d = self.pos.distance_to(other.pos)
+            if d < ALIGNMENT_RADIUS:
+                avg += other.vel
+                total += 1
+        if total > 0:
+            avg /= total
+            avg.scale_to_length(MAX_SPEED)
+            steer = avg - self.vel
+            if steer.length() > MAX_FORCE:
+                steer.scale_to_length(MAX_FORCE)
+            return steer
+        return Vector2(0, 0)
+
+    def cohesion(self, boids):
+        center = Vector2(0, 0)
+        total = 0
+        for other in boids:
+            if other is self:
+                continue
+            d = self.pos.distance_to(other.pos)
+            if d < COHESION_RADIUS:
+                center += other.pos
+                total += 1
+        if total > 0:
+            center /= total
+            desired = (center - self.pos)
+            if desired.length() > 0:
+                desired.scale_to_length(MAX_SPEED)
+                steer = desired - self.vel
+                if steer.length() > MAX_FORCE:
+                    steer.scale_to_length(MAX_FORCE)
+                return steer
+        return Vector2(0, 0)
+
+    # Pixel-based separation: sample the screen for other bird colors
+    def separation_pixel(self, surf, sample_step=PIXEL_SAMPLE_STEP, radius=PIXEL_SEP_RADIUS):
+        steer = Vector2(0, 0)
+        found = 0
+        cx, cy = int(self.pos.x), int(self.pos.y)
+        for dx in range(-radius, radius + 1, sample_step):
+            for dy in range(-radius, radius + 1, sample_step):
+                x = cx + dx
+                y = cy + dy
+                # wrap sampling across edges so detection is continuous
+                x_wr = x % WIDTH
+                y_wr = y % HEIGHT
+                if dx * dx + dy * dy > radius * radius:
+                    continue
+                color = surf.get_at((x_wr, y_wr))[:3]
+                if color == BACKGROUND_COLOR:
+                    continue
+                if color == self.color:
+                    continue
+                # other bird pixel detected -> move away
+                found += 1
+                steer += Vector2(cx - x_wr, cy - y_wr)
+        if found > 0:
+            steer /= found
+            if steer.length() > 0:
+                steer.scale_to_length(MAX_SPEED)
+                steer -= self.vel
+                if steer.length() > MAX_FORCE:
+                    steer.scale_to_length(MAX_FORCE)
+        return steer
+
+    def _rotate_to_target(self, current_angle, target_angle, threshold=15, rotation_speed=4):
+        """Return a new angle moved toward target using minimal rotation."""
+        diff = (current_angle - target_angle + 180) % 360 - 180
+        if abs(diff) > threshold:
+            return current_angle + (rotation_speed if diff < 0 else -rotation_speed)
+        return current_angle
 
 
-    # flip() the display to put your work on screen
-    pygame.display.flip()
+def run():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont(None, 22)
 
-    clock.tick(60)  # limits FPS to 60
+    # create boids with distinct colors
+    boids = []
+    for i in range(NUM_BOIDS):
+        x = random.uniform(0, WIDTH)
+        y = random.uniform(0, HEIGHT)
+        color = hsv_to_rgb_int((i / NUM_BOIDS) % 1.0, 0.75, 0.9)
+        boids.append(Boid(x, y, color))
 
-pygame.quit()
+    pixel_mode = False
+    show_trails = False
+    running = True
+
+    global SEPARATION_WEIGHT
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_p:
+                    pixel_mode = not pixel_mode
+                elif event.key == pygame.K_SPACE:
+                    # spawn more boids
+                    for _ in range(10):
+                        i = random.randint(0, 1000)
+                        color = hsv_to_rgb_int(random.random(), 0.8, 0.9)
+                        boids.append(Boid(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), color))
+                elif event.key == pygame.K_t:
+                    show_trails = not show_trails
+                elif event.key == pygame.K_b:
+                    # toggle boundary behavior
+                    global BOUNDARY_MODE
+                    BOUNDARY_MODE = 'avoid' if BOUNDARY_MODE == 'wrap' else 'wrap'
+                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    SEPARATION_WEIGHT += 0.1
+                elif event.key == pygame.K_MINUS or event.key == pygame.K_UNDERSCORE:
+                    SEPARATION_WEIGHT = max(0.0, SEPARATION_WEIGHT - 0.1)
+
+        if not show_trails:
+            screen.fill(BACKGROUND_COLOR)
+        
+
+        # If using pixel-based separation, we must first draw boids to the screen
+        # so their colors exist in pixels to be sampled. But we'll still use
+        # vector-based alignment/cohesion; pixel mode only replaces separation.
+        for b in boids:
+            b.draw(screen)
+
+        # compute and apply steering
+        for b in boids:
+            sep = Vector2(0, 0)
+            if pixel_mode:
+                sep = b.separation_pixel(screen)
+            else:
+                sep = b.separation(boids)
+            ali = b.alignment(boids)
+            coh = b.cohesion(boids)
+
+            b.apply_force(sep * SEPARATION_WEIGHT)
+            b.apply_force(ali * ALIGNMENT_WEIGHT)
+            b.apply_force(coh * COHESION_WEIGHT)
+
+        # update (after drawing) so pixel sampling shows current frame
+        for b in boids:
+            b.update()
+
+        # HUD
+        mode_text = "PIXEL-SEP" if pixel_mode else "VECTOR-SEP"
+        hud_text = f"Boids: {len(boids)}  Mode: {mode_text}  SepW: {SEPARATION_WEIGHT:.1f}  Trails: {show_trails}  Boundary: {BOUNDARY_MODE} (press 'B' to toggle)"
+        text = font.render(hud_text, True, (30, 30, 30))
+        screen.blit(text, (8, 8))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    run()
