@@ -1,10 +1,11 @@
-# BOIDS - Bird Flocking Simulation Program#
+# BOIDS - Bird Flocking Simulation Program
 
-## Preface
-I became interested in this simulation after learning about flocking bird behaviors and emergent properties in my
-COGS100 Class - "Cyborgs, Now and in the Future".
+![Working Simulation](BOIDS.png)
 
-## The Big Question, How Do Birds Flock?
+## Preface and Notes
+I became interested in this simulation after learning about the BOIDS program in my COGS 100 class, Cyborgs, Now and in the Future. The program was first developed by Craig Reynolds in 1986 and aimed to understand flocking bird behavior as an emergent property. I decided to create my own version of the simulation in Python, utilizing the Pygame library and vectors to simulate birds on a display. Some inspiration was taken from Ben Eater, who created a web based version of the BOIDS algorithm in JavaScript, which can be found [here](https://eater.net/boids).
+
+## The Big Question: How Do Birds Flock?
 
 Bird flocking appears highly complex and coordinated, yet it emerges from very simple local rules followed by each individual bird. The BOIDS model demonstrates how complex and collective behaviors can arise without central control, producing seemingly infinite flocking patterns from a small set of rules.
 

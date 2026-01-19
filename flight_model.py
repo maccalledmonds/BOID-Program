@@ -260,7 +260,7 @@ def run():
     # place five sliders inside the UI panel (Radius multiplier + existing sliders)
     sy = SIM_HEIGHT + 8
     slider_w = WIDTH - pad * 2
-    radius_slider = SliderUI(sx, sy + 20, slider_w, 'Radius Mul', 0.1, 8.0, lambda: RADIUS_MULTIPLIER, lambda v: globals().update({'RADIUS_MULTIPLIER': v}))
+    radius_slider = SliderUI(sx, sy + 20, slider_w, 'Visual Range', 0.1, 8.0, lambda: RADIUS_MULTIPLIER, lambda v: globals().update({'RADIUS_MULTIPLIER': v}))
     speed_slider = SliderUI(sx, sy + 50, slider_w, 'Max Speed', 0.5, 40.0, lambda: MAX_SPEED, lambda v: globals().update({'MAX_SPEED': v}))
     sep_slider = SliderUI(sx, sy + 80, slider_w, 'Separation', 0.0, 8.0, lambda: SEPARATION_WEIGHT, lambda v: globals().update({'SEPARATION_WEIGHT': v}))
     ali_slider = SliderUI(sx, sy + 110, slider_w, 'Alignment', 0.0, 8.0, lambda: ALIGNMENT_WEIGHT, lambda v: globals().update({'ALIGNMENT_WEIGHT': v}))
