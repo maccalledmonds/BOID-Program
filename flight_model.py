@@ -27,7 +27,7 @@ NEAR_EDGE_RATIO = 0.06            # fraction of width/height considered 'near' a
 EDGE_THRESHOLD_RATIO = 0.12       # fraction of min(width,sim_height) used to scale reaction
 ROTATION_BASE = 4.0               # base rotation speed (degrees per frame)
 ROTATION_EXTRA = 16.0             # additional rotation scaling when very close to edge
-_ROTATION_BASE_SPEED = 3.5        # baseline speed used to scale rotation with MAX_SPEED
+ROTATION_BASE_SPEED = 3.5        # baseline speed used to scale rotation with MAX_SPEED
 
 TRAIL_HISTORY = 30
 TRAIL_POINT_STEP = 2
@@ -35,9 +35,7 @@ TRAIL_WIDTH = 1
 
 # Visual sizes
 BOID_SIZE = 6
-
 RADIUS_MULTIPLIER = 4
-
 BACKGROUND_COLOR = (245, 248, 250)
 
 
@@ -110,9 +108,9 @@ class Boid:
 
         if target is not None:
             # rotation speed scales with MAX_SPEED so faster boids turn quicker
-            speed_scale = MAX_SPEED / _ROTATION_BASE_SPEED if _ROTATION_BASE_SPEED > 0 else 1.0
+            speed_scale = MAX_SPEED / ROTATION_BASE_SPEED if ROTATION_BASE_SPEED > 0 else 1.0
             rotation_speed = ROTATION_BASE * speed_scale + proximity * ROTATION_EXTRA * speed_scale
-            self.angle = self._rotate_to_target(self.angle, target, rotation_speed=rotation_speed)
+            self.angle = self.rotate_to_target(self.angle, target, rotation_speed=rotation_speed)
             # slowly nudge velocity direction toward the heading represented by self.angle
             direction = pygame.math.Vector2(1, 0).rotate(-self.angle)
             blend = min(1.0, 0.12 + proximity * 0.7)
@@ -184,7 +182,7 @@ class Boid:
                 return steer
         return pygame.math.Vector2(0, 0)
 
-    def _rotate_to_target(self, current_angle, target_angle, threshold=2, rotation_speed=4):
+    def rotate_to_target(self, current_angle, target_angle, threshold=2, rotation_speed=4):
         # normalize difference to [-180,180]
         diff = (target_angle - current_angle + 180) % 360 - 180
         if abs(diff) <= threshold:
