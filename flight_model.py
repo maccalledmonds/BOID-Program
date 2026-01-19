@@ -61,8 +61,10 @@ class Boid:
 
     def update(self):
         self.vel += self.acc
-        if self.vel.length_squared() > 0.0001:
-            self.vel.scale_to_length(MAX_SPEED)
+        l2 = self.vel.length_squared()
+        if l2 > 0.0001:
+            if l2 > (MAX_SPEED * MAX_SPEED):
+                self.vel.scale_to_length(MAX_SPEED)
             self.angle = self.vel.angle_to(pygame.math.Vector2(1, 0))
         self.pos += self.vel
         self.acc *= 0
@@ -257,7 +259,7 @@ def run():
 
     pad = 14
     sx = pad
-    # place five sliders inside the UI panel (Radius multiplier + existing sliders)
+    #places five sliders inside the UI panel (Radius multiplier + existing sliders)
     sy = SIM_HEIGHT + 8
     slider_w = WIDTH - pad * 2
     radius_slider = SliderUI(sx, sy + 20, slider_w, 'Visual Range', 0.1, 8.0, lambda: RADIUS_MULTIPLIER, lambda v: globals().update({'RADIUS_MULTIPLIER': v}))
