@@ -1,0 +1,284 @@
+import math
+import numpy as np
+import moderngl
+from pyrr import Matrix44, Vector3
+
+
+VERTEX_SHADER = '''
+    #version 330
+    in vec3 in_pos;                 // mesh vertex (local coordinates, X = forward)
+    in vec3 in_normal;              // per-vertex normal (local space)
+    in vec3 instance_pos;           // per-instance position
+    in vec3 instance_vel;           // per-instance velocity (direction)
+    in vec3 instance_col;           // per-instance color
+
+    uniform mat4 u_view;
+    uniform mat4 u_proj;
+    uniform float u_scale;
+
+    out vec3 v_color;
+    out vec3 v_normal;
+    out vec3 v_world_pos;
+
+    // build an orthonormal basis that maps model X->forward, Y->right, Z->up
+    mat3 build_basis(vec3 forward) {
+        vec3 f = normalize(forward);
+        if (length(f) < 1e-6) {
+            f = vec3(1.0, 0.0, 0.0);
+        }
+        vec3 world_up = vec3(0.0, 1.0, 0.0);
+        // if forward is nearly parallel to world_up, pick a different up
+        if (abs(dot(f, world_up)) > 0.999) {
+            world_up = vec3(1.0, 0.0, 0.0);
+        }
+        vec3 r = normalize(cross(world_up, f)); // right
+        vec3 u = cross(f, r); // up
+        // columns order: forward, right, up so local (x,y,z) -> x*forward + y*right + z*up
+        return mat3(f, r, u);
+    }
+
+    void main() {
+        v_color = instance_col;
+        // construct basis from velocity
+        mat3 basis = build_basis(instance_vel);
+        // apply uniform scale and orient the vertex
+        vec3 local = in_pos * u_scale;
+        // map local coords using the basis: local.x*forward + local.y*right + local.z*up
+        vec3 world = instance_pos + basis * local;
+        gl_Position = u_proj * u_view * vec4(world, 1.0);
+        // rotate normal by basis (no scale assumed)
+        v_normal = normalize(basis * in_normal);
+        v_world_pos = world;
+    }
+'''
+
+
+FRAGMENT_SHADER = '''
+    #version 330
+    in vec3 v_color;
+    in vec3 v_normal;
+    in vec3 v_world_pos;
+    out vec4 f_color;
+
+    uniform vec3 u_light_dir;
+    uniform float u_ambient;
+    uniform float u_diffuse;
+
+    void main() {
+        vec3 N = normalize(v_normal);
+        vec3 L = normalize(u_light_dir);
+        float d = max(dot(N, L), 0.0);
+        vec3 color = v_color * (u_ambient + u_diffuse * d);
+        f_color = vec4(color, 1.0);
+    }
+'''
+
+
+class GLRenderer:
+    """ModernGL renderer for instanced boid triangles.
+
+    - Creates a ModernGL context from the current GL context (must be current)
+    - Uses instanced rendering: per-instance attributes are position, velocity, color.
+    - Exposes `render(positions, velocities, colors)` which accepts NumPy arrays.
+    """
+
+    def __init__(self, width, height, camera_pos=(500.0, 350.0, 900.0)):
+        # Create context from the current OpenGL context (must be current)
+        self.ctx = moderngl.create_context()
+        self.width = width
+        self.height = height
+        self.prog = self.ctx.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
+
+        # 3D elongated pyramid mesh (forward along +X). tip is farther on +X for elongation
+        tip = np.array([2.0, 0.0, 0.0], dtype='f4')
+        # base is an equilateral triangle lying in the YZ plane, centered at x=-0.5
+        s = 0.8  # side length of the equilateral base
+        h = s * 0.8660254037844386  # sqrt(3)/2
+        b1 = np.array([-0.5,  2.0 * h / 3.0,  0.0], dtype='f4')    # top vertex (centroid at origin)
+        b2 = np.array([-0.5, -1.0 * h / 3.0, -s / 2.0], dtype='f4')
+        b3 = np.array([-0.5, -1.0 * h / 3.0,  s / 2.0], dtype='f4')
+
+        faces = [
+            (tip, b1, b2),
+            (tip, b2, b3),
+            (tip, b3, b1),
+            (b1, b3, b2),  # base
+        ]
+
+        positions = []
+        normals = []
+        for a, b, c in faces:
+            # face normal
+            u = b - a
+            v = c - a
+            n = np.cross(u, v)
+            n = n / (np.linalg.norm(n) + 1e-9)
+            for p in (a, b, c):
+                positions.extend(p.tolist())
+                normals.extend(n.tolist())
+
+        mesh = np.array(positions + normals, dtype='f4')
+        # interleave: we will create buffer with pos then normals separated by attribute format
+        # pack as [pos..., normal...] per vertex by concatenating two arrays
+        vert_count = int(len(positions) / 3)
+        interleaved = np.empty(vert_count * 6, dtype='f4')
+        interleaved[0::6] = np.array(positions[0::3], dtype='f4')
+        interleaved[1::6] = np.array(positions[1::3], dtype='f4')
+        interleaved[2::6] = np.array(positions[2::3], dtype='f4')
+        interleaved[3::6] = np.array(normals[0::3], dtype='f4')
+        interleaved[4::6] = np.array(normals[1::3], dtype='f4')
+        interleaved[5::6] = np.array(normals[2::3], dtype='f4')
+
+        self.vbo = self.ctx.buffer(interleaved.tobytes())
+
+        # Empty instance buffer (will be updated per-frame)
+        # layout: vec3 pos, vec3 vel, vec3 col -> 9 floats per instance
+        self.instance_buffer = self.ctx.buffer(reserve=9 * 4 * 1000)  # reserve for up to 1000 instances
+
+        # Vertex Array: bind mesh and instance attributes (instance divisor)
+        self.vao = self.ctx.vertex_array(
+            self.prog,
+            [
+                (self.vbo, '3f 3f', 'in_pos', 'in_normal'),
+                (self.instance_buffer, '3f 3f 3f/i', 'instance_pos', 'instance_vel', 'instance_col'),
+            ],
+        )
+
+        # camera (spherical controls)
+        self.width = width
+        self.height = height
+        self.camera_pos = Vector3(camera_pos)
+        self.view = Matrix44.look_at(self.camera_pos, (width/2.0, height/2.0, 0.0), (0.0, 1.0, 0.0))
+        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 5000.0)
+
+        # set uniforms
+        self.prog['u_view'].write(self.view.astype('f4').tobytes())
+        self.prog['u_proj'].write(self.proj.astype('f4').tobytes())
+        self.prog['u_scale'].value = 8.0
+
+        # simple lighting
+        self.prog['u_light_dir'].value = (0.3, 0.5, -1.0)
+        self.prog['u_ambient'].value = 0.25
+        self.prog['u_diffuse'].value = 0.85
+
+        # state
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        self.ctx.enable(moderngl.CULL_FACE)
+
+        # camera spherical state (degrees)
+        self.yaw = 0.0
+        self.pitch = -25.0
+        self.distance = 900.0
+        self.look_at = (width/2.0, height/2.0, 0.0)
+
+        # line program for boundary visualization
+        LINE_VS = '''
+            #version 330
+            in vec3 in_pos;
+            uniform mat4 u_view;
+            uniform mat4 u_proj;
+            void main() {
+                gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+            }
+        '''
+        LINE_FS = '''
+            #version 330
+            uniform vec3 u_color;
+            out vec4 f_color;
+            void main() { f_color = vec4(u_color, 1.0); }
+        '''
+        self.line_prog = self.ctx.program(vertex_shader=LINE_VS, fragment_shader=LINE_FS)
+        self.line_vbo = None
+        self.line_vao = None
+
+    def update_camera(self, camera_pos=None, look_at=None):
+        if camera_pos is not None:
+            self.camera_pos = Vector3(camera_pos)
+        if look_at is None:
+            look_at = (self.width/2.0, self.height/2.0, 0.0)
+        self.view = Matrix44.look_at(self.camera_pos, look_at, (0.0, 1.0, 0.0))
+        self.prog['u_view'].write(self.view.astype('f4').tobytes())
+
+    def set_camera_spherical(self, yaw_deg, pitch_deg, distance, look_at=None):
+        self.yaw = yaw_deg
+        self.pitch = pitch_deg
+        self.distance = distance
+        if look_at is not None:
+            self.look_at = look_at
+        # convert spherical to Cartesian (Y is world-up)
+        # yaw rotates around the Y axis (changes X and Z), pitch moves up/down (changes Y)
+        yaw = math.radians(self.yaw)
+        pitch = math.radians(self.pitch)
+        x = self.look_at[0] + self.distance * math.cos(pitch) * math.cos(yaw)
+        y = self.look_at[1] + self.distance * math.sin(pitch)
+        z = self.look_at[2] + self.distance * math.cos(pitch) * math.sin(yaw)
+        self.update_camera((x, y, z), self.look_at)
+
+    def resize(self, width, height):
+        self.width = width
+        self.height = height
+        self.ctx.viewport = (0, 0, width, height)
+        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 5000.0)
+        self.prog['u_proj'].write(self.proj.astype('f4').tobytes())
+        self.line_prog['u_proj'].write(self.proj.astype('f4').tobytes())
+
+    def render(self, positions: np.ndarray, velocities: np.ndarray, colors: np.ndarray):
+        """Render instances.
+
+        positions: (N,3) float32
+        velocities: (N,3) float32
+        colors: (N,3) float32 in 0..1
+        """
+        n = len(positions)
+        if n == 0:
+            return
+
+        # pack instance data
+        inst = np.hstack([positions.astype('f4'), velocities.astype('f4'), colors.astype('f4')])
+        # write per-instance buffer
+        self.instance_buffer.orphan(size=inst.nbytes)
+        self.instance_buffer.write(inst.tobytes())
+
+        # clear and draw
+        self.ctx.clear(0.96, 0.97, 0.98)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        # update view uniform in case camera changed externally
+        self.prog['u_view'].write(self.view.astype('f4').tobytes())
+        self.line_prog['u_view'].write(self.view.astype('f4').tobytes())
+        self.vao.render(instances=n)
+
+    def draw_boundary(self, width, sim_height, depth, color=(0.2, 0.2, 0.2)):
+        # draw the 12 edges of the axis-aligned box from (0,0,-depth/2) to (width,sim_height,depth/2)
+        zmin = -depth / 2.0
+        zmax = depth / 2.0
+        # 8 corners
+        c0 = (0.0, 0.0, zmin)
+        c1 = (width, 0.0, zmin)
+        c2 = (width, sim_height, zmin)
+        c3 = (0.0, sim_height, zmin)
+        c4 = (0.0, 0.0, zmax)
+        c5 = (width, 0.0, zmax)
+        c6 = (width, sim_height, zmax)
+        c7 = (0.0, sim_height, zmax)
+
+        # edges as pairs (12 edges)
+        edges = [
+            (c0, c1), (c1, c2), (c2, c3), (c3, c0),  # bottom
+            (c4, c5), (c5, c6), (c6, c7), (c7, c4),  # top
+            (c0, c4), (c1, c5), (c2, c6), (c3, c7),  # vertical
+        ]
+
+        coords = np.array([coord for edge in edges for corner in edge for coord in corner], dtype='f4')
+
+        if self.line_vbo is None:
+            self.line_vbo = self.ctx.buffer(coords.tobytes())
+            self.line_vao = self.ctx.vertex_array(self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
+        else:
+            self.line_vbo.orphan(size=coords.nbytes)
+            self.line_vbo.write(coords.tobytes())
+
+        self.line_prog['u_color'].value = tuple(color)
+        # ensure view/proj uniforms up to date
+        self.line_prog['u_view'].write(self.view.astype('f4').tobytes())
+        self.line_prog['u_proj'].write(self.proj.astype('f4').tobytes())
+        self.line_vao.render(mode=moderngl.LINES)

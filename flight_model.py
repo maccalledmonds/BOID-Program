@@ -3,12 +3,15 @@ import random
 import colorsys
 from collections import deque
 import pygame
+import numpy as np
+from gl_renderer import GLRenderer
 
 # Simulation configuration
 WIDTH = 1000
 HEIGHT = 700
 UI_HEIGHT = 180
 SIM_HEIGHT = HEIGHT - UI_HEIGHT
+DEPTH = max(WIDTH, SIM_HEIGHT, 600)  # make depth at least as large as width/sim height to allow a cube boundary
 
 NUM_BOIDS = 60
 MAX_SPEED = 10
@@ -46,17 +49,26 @@ def hsv_to_rgb_int(h, s, v):
 
 class Boid:
     def __init__(self, x, y, color):
-        self.pos = pygame.math.Vector2(x, y)
-        ang = random.uniform(0, math.tau)
-        direction = pygame.math.Vector2(math.cos(ang), math.sin(ang))
-        self.vel = direction * MAX_SPEED
-        self.acc = pygame.math.Vector2(0, 0)
+        # 3D position and velocity
+        z = random.uniform(-DEPTH/2.0, DEPTH/2.0)
+        self.pos = pygame.math.Vector3(x, y, z)
+        # random 3D direction
+        d = pygame.math.Vector3(random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1))
+        if d.length() == 0:
+            d = pygame.math.Vector3(1, 0, 0)
+        d.scale_to_length(1.0)
+        self.vel = d * MAX_SPEED
+        # accelerations are 3D
+        self.acc = pygame.math.Vector3(0, 0, 0)
         self.color = color
         self.history = deque(maxlen=TRAIL_HISTORY)
         self._hist_step = 0
-        self.angle = math.degrees(ang)
+        self.angle = 0.0
 
-    def apply_force(self, f: pygame.math.Vector2):
+    def apply_force(self, f):
+        # accept either 2D or 3D vectors
+        if isinstance(f, pygame.math.Vector2):
+            f = pygame.math.Vector3(f.x, f.y, 0.0)
         self.acc += f
 
     def update(self):
@@ -65,58 +77,52 @@ class Boid:
         if l2 > 0.0001:
             if l2 > (MAX_SPEED * MAX_SPEED):
                 self.vel.scale_to_length(MAX_SPEED)
-            self.angle = self.vel.angle_to(pygame.math.Vector2(1, 0))
+            # update 2D heading angle from XY components for UI drawing
+            self.angle = math.degrees(math.atan2(self.vel.y, self.vel.x))
         self.pos += self.vel
         self.acc *= 0
 
-        # Edge avoidance: if near an edge, then rotate the desired heading away based on direction of approach
-        x_pos, y_pos = self.pos.x, self.pos.y
-        near_left = x_pos < WIDTH * NEAR_EDGE_RATIO
-        near_right = x_pos > WIDTH * (1.0 - NEAR_EDGE_RATIO)
-        near_top = y_pos < SIM_HEIGHT * NEAR_EDGE_RATIO
-        near_bottom = y_pos > SIM_HEIGHT * (1.0 - NEAR_EDGE_RATIO)
-
+        # 3D Edge avoidance: compute distance to each wall and nudge inward when near
+        x_pos, y_pos, z_pos = self.pos.x, self.pos.y, self.pos.z
+        z_min = -DEPTH / 2.0
+        z_max = DEPTH / 2.0
         dist_left = x_pos
         dist_right = WIDTH - x_pos
         dist_top = y_pos
         dist_bottom = SIM_HEIGHT - y_pos
-        dist_to_edge = min(dist_left, dist_right, dist_top, dist_bottom)
+        dist_z_min = z_pos - z_min
+        dist_z_max = z_max - z_pos
+        dist_to_edge = min(dist_left, dist_right, dist_top, dist_bottom, dist_z_min, dist_z_max)
 
-        edge_threshold = min(WIDTH, SIM_HEIGHT) * EDGE_THRESHOLD_RATIO
+        edge_threshold = min(WIDTH, SIM_HEIGHT, DEPTH) * EDGE_THRESHOLD_RATIO
         proximity = 0.0
         if dist_to_edge < edge_threshold:
             proximity = max(0.0, (edge_threshold - dist_to_edge) / edge_threshold)
-
-        target = None
-        if near_left and near_top:
-            target = 315
-        elif near_right and near_top:
-            target = 225
-        elif near_left and near_bottom:
-            target = 45
-        elif near_right and near_bottom:
-            target = 135
-        else:
-            if near_right:
-                target = 180
-            elif near_left:
-                target = 0
-            if near_bottom:
-                if target is None:
-                    target = 90
-            elif near_top:
-                if target is None:
-                    target = 270
-
-        if target is not None:
-            # rotation speed scales with MAX_SPEED so faster boids turn quicker
-            speed_scale = MAX_SPEED / ROTATION_BASE_SPEED if ROTATION_BASE_SPEED > 0 else 1.0
-            rotation_speed = ROTATION_BASE * speed_scale + proximity * ROTATION_EXTRA * speed_scale
-            self.angle = self.rotate_to_target(self.angle, target, rotation_speed=rotation_speed)
-            # slowly nudge velocity direction toward the heading represented by self.angle
-            direction = pygame.math.Vector2(1, 0).rotate(-self.angle)
+            # pick inward direction away from the closest face(s)
+            dir_vec = pygame.math.Vector3(0, 0, 0)
+            # X axis
+            if dist_left == dist_to_edge:
+                dir_vec += pygame.math.Vector3(1, 0, 0)
+            elif dist_right == dist_to_edge:
+                dir_vec += pygame.math.Vector3(-1, 0, 0)
+            # Y axis
+            if dist_top == dist_to_edge:
+                dir_vec += pygame.math.Vector3(0, 1, 0)
+            elif dist_bottom == dist_to_edge:
+                dir_vec += pygame.math.Vector3(0, -1, 0)
+            # Z axis
+            if dist_z_min == dist_to_edge:
+                dir_vec += pygame.math.Vector3(0, 0, 1)
+            elif dist_z_max == dist_to_edge:
+                dir_vec += pygame.math.Vector3(0, 0, -1)
+            if dir_vec.length() == 0:
+                # fallback: push toward center
+                center = pygame.math.Vector3(WIDTH/2.0, SIM_HEIGHT/2.0, 0.0)
+                dir_vec = (center - self.pos)
+            dir_vec.normalize_ip()
             blend = min(1.0, 0.12 + proximity * 0.7)
-            self.vel = self.vel + (direction * MAX_SPEED - self.vel) * blend
+            desired = dir_vec * MAX_SPEED
+            self.vel = self.vel + (desired - self.vel) * blend
 
         self._hist_step += 1
         if self._hist_step >= TRAIL_POINT_STEP:
@@ -134,13 +140,13 @@ class Boid:
         return res
 
     def separation(self, boids):
-        steer = pygame.math.Vector2(0, 0)
+        steer = pygame.math.Vector3(0, 0, 0)
         total = 0
         for other in self.neighbors(boids, SEPARATION_RADIUS):
             diff = self.pos - other.pos
             d = diff.length()
             if d > 0:
-                steer += diff.normalize() / d
+                steer += (diff.normalize() / d)
                 total += 1
         if total > 0:
             steer /= total
@@ -152,7 +158,7 @@ class Boid:
         return steer
 
     def alignment(self, boids):
-        avg = pygame.math.Vector2(0, 0)
+        avg = pygame.math.Vector3(0, 0, 0)
         total = 0
         for other in self.neighbors(boids, ALIGNMENT_RADIUS):
             avg += other.vel
@@ -165,10 +171,10 @@ class Boid:
                 if steer.length() > MAX_FORCE:
                     steer.scale_to_length(MAX_FORCE)
                 return steer
-        return pygame.math.Vector2(0, 0)
+        return pygame.math.Vector3(0, 0, 0)
 
     def cohesion(self, boids):
-        center = pygame.math.Vector2(0, 0)
+        center = pygame.math.Vector3(0, 0, 0)
         total = 0
         for other in self.neighbors(boids, COHESION_RADIUS):
             center += other.pos
@@ -182,15 +188,14 @@ class Boid:
                 if steer.length() > MAX_FORCE:
                     steer.scale_to_length(MAX_FORCE)
                 return steer
-        return pygame.math.Vector2(0, 0)
+        return pygame.math.Vector3(0, 0, 0)
 
     def rotate_to_target(self, current_angle, target_angle, threshold=2, rotation_speed=4):
-        # normalize difference to [-180,180]
+        # keep legacy method for 2D UI rotation (unused for 3D calculations)
         diff = (target_angle - current_angle + 180) % 360 - 180
         if abs(diff) <= threshold:
             return target_angle
         step = rotation_speed if diff > 0 else -rotation_speed
-        # clamp step to not overshoot
         if abs(step) > abs(diff):
             return target_angle
         return (current_angle + step) % 360
@@ -243,8 +248,13 @@ class SliderUI:
 
 def run():
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Boids — flight_model.py")
+    # Create an OpenGL-capable window but keep using Pygame for events/input
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
+    flags = pygame.OPENGL | pygame.DOUBLEBUF
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+    pygame.display.set_caption("Boids — flight_model.py (ModernGL)")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 20)
 
@@ -254,6 +264,14 @@ def run():
         y = random.uniform(0, SIM_HEIGHT)
         color = hsv_to_rgb_int((i / max(1, NUM_BOIDS)) % 1.0, 0.7, 0.95)
         boids.append(Boid(x, y, color))
+
+    # Initialize ModernGL renderer (uses the current OpenGL context created above)
+    renderer = GLRenderer(WIDTH, HEIGHT)
+    # persistent orbit center (so panning updates the rotation center)
+    renderer.look_at = (WIDTH / 2.0, SIM_HEIGHT / 2.0, 0.0)
+    renderer.set_camera_spherical(renderer.yaw, renderer.pitch, renderer.distance, look_at=renderer.look_at)
+    # camera interaction state (trackpad/mouse drag and wheel)
+    dragging = False
 
     global SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT
 
@@ -271,6 +289,9 @@ def run():
 
     show_trails = False
     running = True
+    dragging = False
+    right_dragging = False
+    prev_mouse_pos = pygame.mouse.get_pos()
 
     while running:
         for ev in pygame.event.get():
@@ -289,6 +310,93 @@ def run():
                     show_trails = not show_trails
             for s in sliders:
                 s.handle_event(ev)
+            
+            #Camera interaction model
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                dragging = True
+                # sync baseline so first delta is small/accurate
+                prev_mouse_pos = pygame.mouse.get_pos()
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 3:
+                right_dragging = True
+                prev_mouse_pos = pygame.mouse.get_pos()
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                dragging = False
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 3:
+                right_dragging = False
+            elif ev.type == pygame.MOUSEMOTION and (dragging or pygame.mouse.get_pressed()[0]):
+                # simpler direct mapping: horizontal drag -> yaw, vertical drag -> pitch
+                # use get_rel() for reliable per-frame deltas while a button is held
+                dx, dy = pygame.mouse.get_rel()
+
+                # sensitivities (resolution-scaled)
+                yaw_sens = 0.25 * (800.0 / max(1, WIDTH))
+                pitch_sens = 0.2 * (600.0 / max(1, SIM_HEIGHT))
+
+                # map dx -> yaw (rotate around world-up), dy -> pitch (tilt)
+                yaw_delta = -dx * yaw_sens
+                pitch_delta = -dy * pitch_sens
+
+                renderer.yaw += yaw_delta
+                renderer.pitch += pitch_delta
+                renderer.pitch = max(-89.0, min(89.0, renderer.pitch))
+                # update camera (orbit around persistent look_at)
+                renderer.set_camera_spherical(renderer.yaw, renderer.pitch, renderer.distance, look_at=renderer.look_at)
+                
+            elif ev.type == pygame.MOUSEMOTION and (right_dragging or pygame.mouse.get_pressed()[2]):
+                # panning: move look_at in camera right/up plane based on mouse deltas
+                # use get_rel() for reliable per-frame deltas while a button is held
+                dx, dy = pygame.mouse.get_rel()
+
+                # compute camera basis from yaw/pitch (degrees)
+                yaw_rad = math.radians(renderer.yaw)
+                pitch_rad = math.radians(renderer.pitch)
+                dir_x = math.cos(pitch_rad) * math.cos(yaw_rad)
+                dir_y = math.cos(pitch_rad) * math.sin(yaw_rad)
+                dir_z = math.sin(pitch_rad)
+                # forward points from camera toward look_at, which is -dir
+                forward = (-dir_x, -dir_y, -dir_z)
+                # world up
+                upw = (0.0, 1.0, 0.0)
+                # right = normalize(cross(world_up, forward))
+                rx = upw[1] * forward[2] - upw[2] * forward[1]
+                ry = upw[2] * forward[0] - upw[0] * forward[2]
+                rz = upw[0] * forward[1] - upw[1] * forward[0]
+                rlen = math.sqrt(rx * rx + ry * ry + rz * rz) + 1e-9
+                rx /= rlen; ry /= rlen; rz /= rlen
+                # up vector for camera = cross(forward, right)
+                ux = forward[1] * rz - forward[2] * ry
+                uy = forward[2] * rx - forward[0] * rz
+                uz = forward[0] * ry - forward[1] * rx
+                ulen = math.sqrt(ux * ux + uy * uy + uz * uz) + 1e-9
+                ux /= ulen; uy /= ulen; uz /= ulen
+
+                # pan scale: proportional to distance so panning feels consistent
+                pan_scale = renderer.distance * 0.001
+
+                lx, ly, lz = renderer.look_at
+                # move look_at: horizontal drag inverts direction so dragging right pans left
+                nx = lx + rx * dx * pan_scale + ux * dy * pan_scale
+                ny = ly + ry * dx * pan_scale + uy * dy * pan_scale
+                nz = lz + rz * dx * pan_scale + uz * dy * pan_scale
+                # persist the new look_at so future orbit uses the panned center
+                renderer.look_at = (nx, ny, nz)
+                renderer.set_camera_spherical(renderer.yaw, renderer.pitch, renderer.distance, look_at=renderer.look_at)
+            elif ev.type == pygame.MOUSEWHEEL:
+                # zoom (keep multiplicative feel); clamp distance
+                if ev.y > 0:
+                    renderer.distance *= 0.85
+                else:
+                    renderer.distance *= 1.15
+
+                # clamp to sensible bounds
+                renderer.distance = max(10.0, min(5000.0, renderer.distance))
+
+                renderer.set_camera_spherical(
+                    renderer.yaw,
+                    renderer.pitch,
+                    renderer.distance,
+                    look_at=renderer.look_at,
+                )
 
         for b in boids:
             s = b.separation(boids)
@@ -302,35 +410,23 @@ def run():
         for b in boids:
             b.update()
 
-        screen.fill(BACKGROUND_COLOR)
+        # (Camera is controlled by trackpad/mouse drag and wheel; keyboard controls removed)
 
-        if show_trails:
-            trail_surf = pygame.Surface((WIDTH, SIM_HEIGHT), pygame.SRCALPHA)
-            for b in boids:
-                pts = list(b.history)
-                n = len(pts)
-                if n < 2:
-                    continue
-                for i in range(1, n):
-                    p1 = pts[i - 1]
-                    p2 = pts[i]
-                    alpha = int(255 * (i / max(1, n - 1)) * 0.85)
-                    col = (b.color[0], b.color[1], b.color[2], alpha)
-                    pygame.draw.line(trail_surf, col, (p1.x, p1.y), (p2.x, p2.y), TRAIL_WIDTH)
-            screen.blit(trail_surf, (0, 0))
+        # Prepare per-instance arrays for ModernGL
+        n = len(boids)
+        positions = np.zeros((n, 3), dtype='f4')
+        velocities = np.zeros((n, 3), dtype='f4')
+        colors = np.zeros((n, 3), dtype='f4')
+        for i, b in enumerate(boids):
+            positions[i, :] = (b.pos.x, b.pos.y, b.pos.z)
+            velocities[i, :] = (b.vel.x, b.vel.y, b.vel.z)
+            colors[i, :] = (b.color[0] / 255.0, b.color[1] / 255.0, b.color[2] / 255.0)
 
-        for b in boids:
-            b.draw(screen)
-
-        ui_y = SIM_HEIGHT
-        pygame.draw.rect(screen, (245, 245, 245), (0, ui_y, WIDTH, UI_HEIGHT))
-        pygame.draw.line(screen, (200, 200, 200), (0, ui_y), (WIDTH, ui_y), 2)
-        for s in sliders:
-            s.draw(screen, font)
-
-        hud = font.render(f"Boids: {len(boids)} (Press 'Space' to Add More)     Trails: {'On' if show_trails else 'Off'} (Press 'T' to Toggle)", True, (40, 40, 40))
-        screen.blit(hud, (8, 8))
-
+        # Render the flock with ModernGL (instanced)
+        renderer.render(positions, velocities, colors)
+        # draw the container boundary in 3D as a cube (use DEPTH for all dimensions)
+        renderer.draw_boundary(DEPTH, DEPTH, DEPTH, color=(0.15, 0.15, 0.15))
+        # Swap buffers (keeps Pygame event loop and input handling intact)
         pygame.display.flip()
         clock.tick(60)
 
