@@ -149,7 +149,7 @@ class GLRenderer:
         self.height = height
         self.camera_pos = Vector3(camera_pos)
         self.view = Matrix44.look_at(self.camera_pos, (width/2.0, height/2.0, 0.0), (0.0, 1.0, 0.0))
-        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 5000.0)
+        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 20000.0)
 
         # set uniforms
         self.prog['u_view'].write(self.view.astype('f4').tobytes())
@@ -191,6 +191,26 @@ class GLRenderer:
         self.line_vbo = None
         self.line_vao = None
 
+        # 2D UI shader for drawing quads (panel backgrounds, slider tracks, knobs)
+        UI_VS = '''
+            #version 330
+            in vec2 in_pos;
+            uniform mat4 u_ortho;
+            void main() {
+                gl_Position = u_ortho * vec4(in_pos, 0.0, 1.0);
+            }
+        '''
+        UI_FS = '''
+            #version 330
+            uniform vec4 u_color;
+            out vec4 f_color;
+            void main() { f_color = u_color; }
+        '''
+        self.ui_prog = self.ctx.program(vertex_shader=UI_VS, fragment_shader=UI_FS)
+        self.ui_vbo = self.ctx.buffer(reserve=6 * 2 * 4 * 100)  # reserve for many quads
+        self.ui_vao = self.ctx.vertex_array(self.ui_prog, [(self.ui_vbo, '2f', 'in_pos')])
+        self._update_ortho()
+
     def update_camera(self, camera_pos=None, look_at=None):
         if camera_pos is not None:
             self.camera_pos = Vector3(camera_pos)
@@ -218,7 +238,7 @@ class GLRenderer:
         self.width = width
         self.height = height
         self.ctx.viewport = (0, 0, width, height)
-        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 5000.0)
+        self.proj = Matrix44.perspective_projection(45.0, width / float(height), 0.1, 20000.0)
         self.prog['u_proj'].write(self.proj.astype('f4').tobytes())
         self.line_prog['u_proj'].write(self.proj.astype('f4').tobytes())
 
@@ -282,3 +302,122 @@ class GLRenderer:
         self.line_prog['u_view'].write(self.view.astype('f4').tobytes())
         self.line_prog['u_proj'].write(self.proj.astype('f4').tobytes())
         self.line_vao.render(mode=moderngl.LINES)
+
+    def _update_ortho(self):
+        # orthographic projection for 2D UI (origin top-left, Y down)
+        # pyrr expects: left, right, bottom, top, near, far
+        # For Y-down with origin at top-left: left=0, right=width, bottom=height, top=0
+        ortho = Matrix44.orthogonal_projection(0.0, float(self.width), float(self.height), 0.0, -1.0, 1.0, dtype='f4')
+        self.ui_prog['u_ortho'].write(ortho.tobytes())
+
+    def draw_ui_quad(self, x, y, w, h, color):
+        """Draw a filled 2D quad. color is (r,g,b,a) in 0..1."""
+        self._update_ortho()
+        # two triangles for the quad
+        verts = np.array([
+            x, y,
+            x + w, y,
+            x + w, y + h,
+            x, y,
+            x + w, y + h,
+            x, y + h,
+        ], dtype='f4')
+        self.ui_vbo.orphan(size=verts.nbytes)
+        self.ui_vbo.write(verts.tobytes())
+        self.ui_prog['u_color'].value = (color[0], color[1], color[2], color[3] if len(color) > 3 else 1.0)
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        self.ctx.disable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ui_vao.render(moderngl.TRIANGLES, vertices=6)
+        self.ctx.disable(moderngl.BLEND)
+        self.ctx.enable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+
+    def draw_ui_circle(self, cx, cy, r, color, segments=16):
+        """Draw a filled 2D circle using a triangle fan."""
+        self._update_ortho()
+        verts = []
+        for i in range(segments):
+            a1 = 2 * math.pi * i / segments
+            a2 = 2 * math.pi * (i + 1) / segments
+            verts.extend([cx, cy])
+            verts.extend([cx + r * math.cos(a1), cy + r * math.sin(a1)])
+            verts.extend([cx + r * math.cos(a2), cy + r * math.sin(a2)])
+        verts = np.array(verts, dtype='f4')
+        self.ui_vbo.orphan(size=verts.nbytes)
+        self.ui_vbo.write(verts.tobytes())
+        self.ui_prog['u_color'].value = tuple(color)
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        self.ctx.disable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ui_vao.render(moderngl.TRIANGLES, vertices=segments * 3)
+        self.ctx.disable(moderngl.BLEND)
+        self.ctx.enable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+
+    def _init_text_shader(self):
+        """Initialize shader for textured quads (text rendering)."""
+        if hasattr(self, 'text_prog'):
+            return
+        TEXT_VS = '''
+            #version 330
+            in vec2 in_pos;
+            in vec2 in_uv;
+            uniform mat4 u_ortho;
+            out vec2 v_uv;
+            void main() {
+                gl_Position = u_ortho * vec4(in_pos, 0.0, 1.0);
+                v_uv = in_uv;
+            }
+        '''
+        TEXT_FS = '''
+            #version 330
+            in vec2 v_uv;
+            uniform sampler2D u_tex;
+            out vec4 f_color;
+            void main() {
+                f_color = texture(u_tex, v_uv);
+            }
+        '''
+        self.text_prog = self.ctx.program(vertex_shader=TEXT_VS, fragment_shader=TEXT_FS)
+        self.text_vbo = self.ctx.buffer(reserve=6 * 4 * 4)  # 6 verts, 4 floats each
+        self.text_vao = self.ctx.vertex_array(self.text_prog, [(self.text_vbo, '2f 2f', 'in_pos', 'in_uv')])
+
+    def draw_text_texture(self, pygame_surface, x, y):
+        """Render a Pygame surface (e.g. rendered text) as a textured quad at (x, y)."""
+        import pygame
+        self._init_text_shader()
+        w, h = pygame_surface.get_size()
+        # Convert Pygame surface to RGBA bytes (Pygame uses BGR, need to flip)
+        # Use pygame.image.tostring with 'RGBA' format
+        rgba_str = pygame.image.tostring(pygame_surface, 'RGBA', True)
+        # Create texture
+        tex = self.ctx.texture((w, h), 4, rgba_str)
+        tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # Quad vertices with UVs (flipped V because of coordinate systems)
+        verts = np.array([
+            x, y, 0, 1,
+            x + w, y, 1, 1,
+            x + w, y + h, 1, 0,
+            x, y, 0, 1,
+            x + w, y + h, 1, 0,
+            x, y + h, 0, 0,
+        ], dtype='f4')
+        self.text_vbo.orphan(size=verts.nbytes)
+        self.text_vbo.write(verts.tobytes())
+        # Update ortho for text shader
+        ortho = Matrix44.orthogonal_projection(0, self.width, self.height, 0, -1, 1)
+        self.text_prog['u_ortho'].write(ortho.astype('f4').tobytes())
+        # Render
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        self.ctx.disable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        tex.use(0)
+        self.text_vao.render(moderngl.TRIANGLES, vertices=6)
+        self.ctx.disable(moderngl.BLEND)
+        self.ctx.enable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        tex.release()

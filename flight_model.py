@@ -11,7 +11,7 @@ WIDTH = 1000
 HEIGHT = 700
 UI_HEIGHT = 180
 SIM_HEIGHT = HEIGHT - UI_HEIGHT
-DEPTH = max(WIDTH, SIM_HEIGHT, 600)  # make depth at least as large as width/sim height to allow a cube boundary
+DEPTH = max(WIDTH, SIM_HEIGHT, 600) * 2  # doubled boundary cube size
 
 NUM_BOIDS = 60
 MAX_SPEED = 10
@@ -245,6 +245,15 @@ class SliderUI:
         lbl = font.render(f"{self.label}: {self.get():.2f}", True, (30, 30, 30))
         surf.blit(lbl, (self.x, self.y - 18))
 
+    def draw_gl(self, renderer):
+        """Draw slider using OpenGL via the renderer."""
+        # track background
+        renderer.draw_ui_quad(self.x, self.y + self.h // 2 - 3, self.w, 6, (0.86, 0.86, 0.86, 1.0))
+        # knob
+        kx = self.knob_x()
+        ky = self.y + self.h // 2
+        renderer.draw_ui_circle(kx, ky, 8, (0.31, 0.31, 0.31, 1.0))
+
 
 def run():
     pygame.init()
@@ -311,30 +320,40 @@ def run():
             for s in sliders:
                 s.handle_event(ev)
             
-            #Camera interaction model
+            # Check if any slider is being dragged (skip camera controls if so)
+            slider_dragging = any(s.drag for s in sliders)
+            
+            # Check if mouse is in the UI area
+            mouse_in_ui = ev.pos[1] > SIM_HEIGHT if hasattr(ev, 'pos') else pygame.mouse.get_pos()[1] > SIM_HEIGHT
+            
+            #Camera interaction model - only when not interacting with UI
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                dragging = True
-                # sync baseline so first delta is small/accurate
-                prev_mouse_pos = pygame.mouse.get_pos()
+                if not mouse_in_ui:
+                    dragging = True
+                    # Reset get_rel() to prevent snapping from accumulated deltas
+                    pygame.mouse.get_rel()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 3:
-                right_dragging = True
-                prev_mouse_pos = pygame.mouse.get_pos()
+                if not mouse_in_ui:
+                    right_dragging = True
+                    # Reset get_rel() to prevent snapping from accumulated deltas
+                    pygame.mouse.get_rel()
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 dragging = False
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 3:
                 right_dragging = False
-            elif ev.type == pygame.MOUSEMOTION and (dragging or pygame.mouse.get_pressed()[0]):
-                # simpler direct mapping: horizontal drag -> yaw, vertical drag -> pitch
-                # use get_rel() for reliable per-frame deltas while a button is held
-                dx, dy = pygame.mouse.get_rel()
+            elif ev.type == pygame.MOUSEMOTION and dragging:
+                # Orbit camera: horizontal drag -> yaw, vertical drag -> pitch
+                # Only process if we started dragging in 3D area (dragging flag is set)
+                dx, dy = ev.rel
 
                 # sensitivities (resolution-scaled)
                 yaw_sens = 0.25 * (800.0 / max(1, WIDTH))
                 pitch_sens = 0.2 * (600.0 / max(1, SIM_HEIGHT))
 
                 # map dx -> yaw (rotate around world-up), dy -> pitch (tilt)
-                yaw_delta = -dx * yaw_sens
-                pitch_delta = -dy * pitch_sens
+                # inverted: drag left->right, drag right->left, drag down->up, drag up->down
+                yaw_delta = dx * yaw_sens
+                pitch_delta = dy * pitch_sens
 
                 renderer.yaw += yaw_delta
                 renderer.pitch += pitch_delta
@@ -342,10 +361,10 @@ def run():
                 # update camera (orbit around persistent look_at)
                 renderer.set_camera_spherical(renderer.yaw, renderer.pitch, renderer.distance, look_at=renderer.look_at)
                 
-            elif ev.type == pygame.MOUSEMOTION and (right_dragging or pygame.mouse.get_pressed()[2]):
+            elif ev.type == pygame.MOUSEMOTION and right_dragging:
                 # panning: move look_at in camera right/up plane based on mouse deltas
                 # use get_rel() for reliable per-frame deltas while a button is held
-                dx, dy = pygame.mouse.get_rel()
+                dx, dy = ev.rel
 
                 # compute camera basis from yaw/pitch (degrees)
                 yaw_rad = math.radians(renderer.yaw)
@@ -374,7 +393,7 @@ def run():
                 pan_scale = renderer.distance * 0.001
 
                 lx, ly, lz = renderer.look_at
-                # move look_at: horizontal drag inverts direction so dragging right pans left
+                # move look_at: inverted panning (drag right = pan left, drag down = pan up)
                 nx = lx + rx * dx * pan_scale + ux * dy * pan_scale
                 ny = ly + ry * dx * pan_scale + uy * dy * pan_scale
                 nz = lz + rz * dx * pan_scale + uz * dy * pan_scale
@@ -388,8 +407,8 @@ def run():
                 else:
                     renderer.distance *= 1.15
 
-                # clamp to sensible bounds
-                renderer.distance = max(10.0, min(5000.0, renderer.distance))
+                # clamp to sensible bounds (allow much larger distance so boundary stays visible)
+                renderer.distance = max(10.0, min(20000.0, renderer.distance))
 
                 renderer.set_camera_spherical(
                     renderer.yaw,
@@ -426,6 +445,23 @@ def run():
         renderer.render(positions, velocities, colors)
         # draw the container boundary in 3D as a cube (use DEPTH for all dimensions)
         renderer.draw_boundary(DEPTH, DEPTH, DEPTH, color=(0.15, 0.15, 0.15))
+
+        # Draw floating UI panel at the bottom
+        # panel background (dark for contrast)
+        renderer.draw_ui_quad(0, SIM_HEIGHT, WIDTH, UI_HEIGHT, (0.2, 0.25, 0.3, 0.95))
+        # top border line
+        renderer.draw_ui_quad(0, SIM_HEIGHT, WIDTH, 2, (0.4, 0.45, 0.5, 1.0))
+        # draw sliders
+        for s in sliders:
+            s.draw_gl(renderer)
+        # draw slider labels using Pygame text rendered to texture
+        for s in sliders:
+            lbl_surf = font.render(f"{s.label}: {s.get():.2f}", True, (220, 220, 220))
+            renderer.draw_text_texture(lbl_surf, s.x, s.y - 16)
+        # draw instructions
+        instr_surf = font.render("Drag sliders | SPACE: +10 boids | T: trails | Mouse: orbit | Scroll: zoom", True, (180, 180, 180))
+        renderer.draw_text_texture(instr_surf, 14, HEIGHT - 24)
+
         # Swap buffers (keeps Pygame event loop and input handling intact)
         pygame.display.flip()
         clock.tick(60)
@@ -434,4 +470,4 @@ def run():
 
 
 if __name__ == '__main__':
-    run() 
+    run()

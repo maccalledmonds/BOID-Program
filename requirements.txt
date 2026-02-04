@@ -1,2 +1,6 @@
+glcontext==3.0.0
+moderngl==5.12.0
+multipledispatch==1.0.0
 numpy==2.3.5
 pygame==2.6.1
+pyrr==0.10.3
