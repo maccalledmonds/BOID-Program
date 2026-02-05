@@ -267,6 +267,40 @@ class GLRenderer:
         self.line_prog['u_view'].write(self.view.astype('f4').tobytes())
         self.vao.render(instances=n)
 
+    def draw_trail(self, points, color, alpha_fade=True):
+        """Draw a trail as connected line segments with optional alpha fade.
+        
+        points: list of (x, y, z) tuples
+        color: (r, g, b) in 0..1
+        alpha_fade: if True, older points are more transparent
+        """
+        if len(points) < 2:
+            return
+
+        # Build a single contiguous vertex list and render as LINE_STRIP
+        coords = np.array([c for p in points for c in p], dtype='f4')
+
+        # Create or update a temporary VBO/VAO for this trail and render immediately.
+        # We reuse self.line_vbo/self.line_vao for simplicity, but ensure the buffer
+        # size matches the current coords to avoid leftover vertices from previous draws.
+        if self.line_vbo is None:
+            self.line_vbo = self.ctx.buffer(coords.tobytes())
+            self.line_vao = self.ctx.vertex_array(self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
+        else:
+            self.line_vbo.orphan(size=coords.nbytes)
+            self.line_vbo.write(coords.tobytes())
+
+        # Use a slightly dimmed version of the boid color for trails
+        trail_color = (color[0] * 0.7, color[1] * 0.7, color[2] * 0.7)
+        self.line_prog['u_color'].value = trail_color
+        # ensure view/proj uniforms up to date
+        self.line_prog['u_view'].write(self.view.astype('f4').tobytes())
+        self.line_prog['u_proj'].write(self.proj.astype('f4').tobytes())
+
+        # Render as a single line strip
+        vertex_count = int(len(coords) / 3)
+        self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=vertex_count)
+
     def draw_boundary(self, width, sim_height, depth, color=(0.2, 0.2, 0.2)):
         # draw the 12 edges of the axis-aligned box from (0,0,-depth/2) to (width,sim_height,depth/2)
         zmin = -depth / 2.0
