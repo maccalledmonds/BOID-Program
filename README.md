@@ -5,7 +5,15 @@ https://github.com/user-attachments/assets/c2558281-decd-4097-9ef5-fe86db4dc32f
 ## Preface and Notes
 I became interested in this simulation after learning about the BOIDS program in my COGS 100 class, Cyborgs, Now and in the Future. The program was first developed by Craig Reynolds in 1986 to understand flocking behavior in birds as an emergent property. I decided to create my own version of the simulation in Python, utilizing the Pygame library and vectors to simulate birds on a display. Some inspiration was drawn from Ben Eater, who created a web-based version of the Boids algorithm in JavaScript, available [here](https://eater.net/boids).
 
-This 3D simulation is a sequel to my initial 2D version of the simulation, which can be found as a branch on this repo or by following this [link](https://github.com/maccalledmonds/BOID-Program/tree/2D--Initial-Iteration). I chose to use ModernGL to render the 3D vector graphics as it integrated well with the original logic that I created using PyGame in my initial 2D version.
+This 3D simulation is a sequel to my initial 2D version, which can be found as a branch in this repo or by following this [link](https://github.com/maccalledmonds/BOID-Program/tree/2D--Initial-Iteration). I chose to use ModernGL to render 3D vector graphics because it integrates well with the original logic I created using PyGame in my initial 2D version.
+
+## Controls and How to Use
+1. Drag while [left-click] to change the camera angle / Drag while [right-click] to pan the camera / Scroll to zoom in and out
+2. Press [space] to add 10 more birds into the simulation at a time
+3. Press [T] to toggle trials of the bird's paths
+4. Click the arrow button on the bottom right of the display to pull up a menu to change bird behavior parameters*
+   
+*Feel free to play around with the parameters! I recommend lowering the cohesion and alignment parameters if you want to flock to form more complex patterns instead of being clumped tightly together :)
 
 ## The Big Question: How Do Birds Flock?
 
