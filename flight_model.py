@@ -32,6 +32,12 @@ ROTATION_BASE = 4.0               # base rotation speed (degrees per frame)
 ROTATION_EXTRA = 16.0             # additional rotation scaling when very close to edge
 ROTATION_BASE_SPEED = 3.5        # baseline speed used to scale rotation with MAX_SPEED
 
+# pygame's scale_to_length/normalize_ip raise on vectors shorter than their
+# internal epsilon (1e-6), not just on exactly-zero vectors. Guarding with
+# `> 0` is therefore not enough: a bird sitting almost exactly on its
+# neighbours' centroid produces a tiny-but-nonzero vector and crashes the sim.
+VEC_EPSILON = 1e-6
+
 TRAIL_HISTORY = 10
 TRAIL_POINT_STEP = 5
 TRAIL_WIDTH = 1
@@ -116,14 +122,17 @@ class Boid:
                 dir_vec += pygame.math.Vector3(0, 0, 1)
             elif dist_z_max == dist_to_edge:
                 dir_vec += pygame.math.Vector3(0, 0, -1)
-            if dir_vec.length() == 0:
+            if dir_vec.length() <= VEC_EPSILON:
                 # fallback: push toward center
                 center = pygame.math.Vector3(DEPTH/2.0, DEPTH/2.0, 0.0)
                 dir_vec = (center - self.pos)
-            dir_vec.normalize_ip()
-            blend = min(1.0, 0.12 + proximity * 0.7)
-            desired = dir_vec * MAX_SPEED
-            self.vel = self.vel + (desired - self.vel) * blend
+            # if the bird is sitting exactly at the centre there is no meaningful
+            # inward direction, so leave the velocity untouched this frame
+            if dir_vec.length() > VEC_EPSILON:
+                dir_vec.normalize_ip()
+                blend = min(1.0, 0.12 + proximity * 0.7)
+                desired = dir_vec * MAX_SPEED
+                self.vel = self.vel + (desired - self.vel) * blend
 
         self._hist_step += 1
         if self._hist_step >= TRAIL_POINT_STEP:
@@ -151,7 +160,7 @@ class Boid:
                 total += 1
         if total > 0:
             steer /= total
-            if steer.length() > 0:
+            if steer.length() > VEC_EPSILON:
                 steer.scale_to_length(MAX_SPEED)
                 steer -= self.vel
                 if steer.length() > MAX_FORCE:
@@ -166,7 +175,7 @@ class Boid:
             total += 1
         if total > 0:
             avg /= total
-            if avg.length() > 0:
+            if avg.length() > VEC_EPSILON:
                 avg.scale_to_length(MAX_SPEED)
                 steer = avg - self.vel
                 if steer.length() > MAX_FORCE:
@@ -183,7 +192,7 @@ class Boid:
         if total > 0:
             center /= total
             desired = center - self.pos
-            if desired.length() > 0:
+            if desired.length() > VEC_EPSILON:
                 desired.scale_to_length(MAX_SPEED)
                 steer = desired - self.vel
                 if steer.length() > MAX_FORCE:
